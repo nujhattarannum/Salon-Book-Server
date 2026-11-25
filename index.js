@@ -468,6 +468,62 @@ app.get("/customer/appointments", async (req, res) => {
     res.status(500).json({ message: "Failed to load appointments." });
   }
 });
+
+// Cancel Only Own Pending Appointment
+app.patch("/customer/appointments/:id/cancel", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid appointment ID." });
+    }
+
+    const customer = await resolveCustomer(req);
+    if (!customer) {
+      return res.status(401).json({ message: "Unauthorized. Please sign in." });
+    }
+
+    const appointment = await appointmentsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!appointment) {
+      return res.status(404).json({ message: "Appointment not found." });
+    }
+
+    // Verify ownership
+    const isOwner = await appointmentsCollection.findOne({
+      $and: [{ _id: new ObjectId(id) }, buildOwnershipQuery(customer)],
+    });
+
+    if (!isOwner) {
+      return res
+        .status(403)
+        .json({ message: "You can only cancel your own appointments." });
+    }
+
+    // Rule: cannot cancel confirmed or already cancelled appointments
+    if (appointment.status !== "pending") {
+      return res.status(400).json({
+        message: `Cannot cancel an appointment that is already ${appointment.status}.`,
+      });
+    }
+
+    const updated = await appointmentsCollection.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: { status: "cancelled", updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+
+    res.json({
+      message: "Appointment request cancelled.",
+      appointment: updated,
+    });
+  } catch (err) {
+    console.error("PATCH /customer/appointments/:id/cancel error:", err);
+    res.status(500).json({ message: "Failed to cancel appointment." });
+  }
+});
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
