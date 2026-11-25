@@ -177,6 +177,46 @@ app.get("/admin/services", requireAdmin, async (req, res) => {
   }
 });
 
+// Update existing service (or toggle isActive)
+app.put("/admin/services/:id", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid service ID." });
+    }
+
+    const updates = { updatedAt: new Date() };
+    if (req.body.name !== undefined) updates.name = String(req.body.name).trim();
+    if (req.body.category !== undefined)
+      updates.category = String(req.body.category).trim();
+    if (req.body.description !== undefined)
+      updates.description = String(req.body.description).trim();
+    if (req.body.price !== undefined) updates.price = Number(req.body.price);
+    if (req.body.duration !== undefined)
+      updates.duration = Number(req.body.duration);
+    if (req.body.image !== undefined)
+      updates.image = String(req.body.image).trim();
+    if (req.body.isActive !== undefined)
+      updates.isActive = Boolean(req.body.isActive);
+
+    const result = await servicesCollection.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updates },
+      { returnDocument: "after" }
+    );
+    if (!result) {
+      return res.status(404).json({ message: "Service not found." });
+    }
+    res.json({
+      message: "Service updated successfully.",
+      service: result,
+    });
+  } catch (err) {
+    console.error("PUT /admin/services/:id error:", err);
+    res.status(500).json({ message: "Failed to update service." });
+  }
+});
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
