@@ -161,6 +161,22 @@ app.get("/admin/stats", requireAdmin, async (req, res) => {
     res.status(500).json({ message: "Failed to load admin stats." });
   }
 });
+
+// List all services (including inactive) for Admin
+app.get("/admin/services", requireAdmin, async (req, res) => {
+  try {
+    const services = await servicesCollection
+      .find({})
+      .sort({ createdAt: -1, _id: -1 })
+      .toArray();
+
+    res.json({ services });
+  } catch (err) {
+    console.error("GET /admin/services error:", err);
+    res.status(500).json({ message: "Failed to load services." });
+  }
+});
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
