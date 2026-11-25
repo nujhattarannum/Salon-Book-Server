@@ -289,6 +289,28 @@ app.delete("/admin/services/:id", requireAdmin, async (req, res) => {
     res.status(500).json({ message: "Failed to delete service." });
   }
 });
+
+function buildUserFilter(id) {
+  return ObjectId.isValid(id)
+    ? { $or: [{ _id: new ObjectId(id) }, { id }] }
+    : { id };
+}
+
+//Api to get users in (Manage Users) in Admin
+app.get("/admin/users", requireAdmin, async (req, res) => {
+  try {
+    const users = await usersCollection
+      .find({}, { projection: { password: 0 } })
+      .sort({ createdAt: -1, _id: -1 })
+      .toArray();
+
+    res.json({ users });
+  } catch (err) {
+    console.error("GET /admin/users error:", err);
+    res.status(500).json({ message: "Failed to load users." });
+  }
+});
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
