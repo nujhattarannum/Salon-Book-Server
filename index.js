@@ -217,6 +217,55 @@ app.put("/admin/services/:id", requireAdmin, async (req, res) => {
   }
 });
 
+// Create new service
+app.post("/admin/services", requireAdmin, async (req, res) => {
+  try {
+    const { name, category, description, price, duration, image, isActive } =
+      req.body;
+
+    if (!name?.trim() || !category?.trim() || !description?.trim()) {
+      return res
+        .status(400)
+        .json({ message: "Name, category, and description are required." });
+    }
+
+    const numericPrice = Number(price);
+    const numericDuration = Number(duration);
+
+    if (Number.isNaN(numericPrice) || numericPrice <= 0) {
+      return res
+        .status(400)
+        .json({ message: "Price must be a positive number." });
+    }
+
+    if (Number.isNaN(numericDuration) || numericDuration <= 0) {
+      return res
+        .status(400)
+        .json({ message: "Duration must be a positive number." });
+    }
+
+    const doc = {
+      name: name.trim(),
+      category: category.trim(),
+      description: description.trim(),
+      price: numericPrice,
+      duration: numericDuration,
+      image: (image || "").trim(),
+      isActive: Boolean(isActive ?? true),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await servicesCollection.insertOne(doc);
+    res.status(201).json({
+      message: "Service created successfully.",
+      service: { _id: result.insertedId, ...doc },
+    });
+  } catch (err) {
+    console.error("POST /admin/services error:", err);
+    res.status(500).json({ message: "Failed to create service." });
+  }
+});
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
