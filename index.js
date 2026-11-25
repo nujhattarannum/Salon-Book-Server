@@ -31,7 +31,7 @@ const paymentsCollection = database.collection("payments");
 const appointmentsCollection = database.collection("appointments");
 
 const AUTH_URL = process.env.BETTER_AUTH_URL;
-
+//Backend Session Helper function
 async function getBetterAuthSession(req) {
   try {
     const cookieHeader = req.headers.cookie;
@@ -84,6 +84,33 @@ async function getBetterAuthSession(req) {
   }
 }
 
+// Middleware to gets the authenticated user straight from authData.user
+async function requireAuth(req, res, next) {
+  const authData = await getBetterAuthSession(req);
+  if (!authData?.user) {
+    return res.status(401).json({ message: "Unauthorized. Please sign in." });
+  }
+  if (authData.user.isBlocked) {
+    return res.status(403).json({ message: "Your account has been blocked." });
+  }
+  req.authUser = authData.user;
+  next();
+}
+
+async function requireAdmin(req, res, next) {
+  const authData = await getBetterAuthSession(req);
+  if (!authData?.user) {
+    return res.status(401).json({ message: "Unauthorized. Please sign in." });
+  }
+  if (authData.user.isBlocked) {
+    return res.status(403).json({ message: "Your account has been blocked." });
+  }
+  if (authData.user.role !== "admin") {
+    return res.status(403).json({ message: "Forbidden. Admin access only." });
+  }
+  req.authUser = authData.user;
+  next();
+}
 // APi To fetch salon services in the homepage 
 app.get("/services", async (req, res) => {
   try {
