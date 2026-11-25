@@ -482,15 +482,64 @@ app.get("/admin/transactions", requireAdmin, async (req, res) => {
   }
 });
 
-//  Customer's Own Appointments (with Service details)
-app.get("/customer/appointments", async (req, res) => {
-  try {
-    const customer = await resolveCustomer(req);
-    if (!customer) {
-      return res.status(401).json({ message: "Unauthorized. Please sign in." });
+function buildOwnershipQuery(user) {
+  const owners = [];
+  if (user?.id) {
+    owners.push(String(user.id));
+    if (ObjectId.isValid(String(user.id))) {
+      owners.push(new ObjectId(String(user.id)));
     }
+  }
+  if (user?._id) {
+    owners.push(user._id, String(user._id));
+  }
 
-    const ownerFilter = buildOwnershipQuery(customer);
+  const conditions = [];
+  if (owners.length > 0) conditions.push({ customerId: { $in: owners } });
+  if (user?.email) conditions.push({ customerEmail: user.email });
+
+  return conditions.length === 1 ? conditions[0] : { $or: conditions };
+}
+
+app.get("/customer/stats", requireAuth, async (req, res) => {
+  try {
+    const ownerFilter = buildOwnershipQuery(req.authUser);
+
+    const [
+      totalAppointments,
+      pendingAppointments,
+      confirmedAppointments,
+      cancelledAppointments,
+    ] = await Promise.all([
+      appointmentsCollection.countDocuments(ownerFilter),
+      appointmentsCollection.countDocuments({
+        $and: [ownerFilter, { status: "pending" }],
+      }),
+      appointmentsCollection.countDocuments({
+        $and: [ownerFilter, { status: "confirmed" }],
+      }),
+      appointmentsCollection.countDocuments({
+        $and: [ownerFilter, { status: "cancelled" }],
+      }),
+    ]);
+
+    res.json({
+      stats: {
+        totalAppointments,
+        pendingAppointments,
+        confirmedAppointments,
+        cancelledAppointments,
+      },
+    });
+  } catch (err) {
+    console.error("GET /customer/stats error:", err);
+    res.status(500).json({ message: "Failed to load customer stats." });
+  }
+});
+
+app.get("/customer/appointments", requireAuth, async (req, res) => {
+  try {
+    const ownerFilter = buildOwnershipQuery(req.authUser);
 
     const appointments = await appointmentsCollection
       .aggregate([
@@ -528,11 +577,15 @@ app.get("/customer/appointments", async (req, res) => {
         {
           $project: {
             serviceId: 1,
-            serviceName: { $ifNull: ["$serviceDoc.name", "$serviceName", "Salon Service"] },
+            serviceName: {
+              $ifNull: ["$serviceDoc.name", "$serviceName", "Salon Service"],
+            },
             serviceImage: "$serviceDoc.image",
             serviceCategory: "$serviceDoc.category",
             serviceDuration: "$serviceDoc.duration",
-            servicePrice: { $ifNull: ["$servicePrice", "$serviceDoc.price", 0] },
+            servicePrice: {
+              $ifNull: ["$servicePrice", "$serviceDoc.price", 0],
+            },
             appointmentDate: 1,
             timeSlot: 1,
             status: 1,
@@ -551,17 +604,11 @@ app.get("/customer/appointments", async (req, res) => {
   }
 });
 
-// Cancel Only Own Pending Appointment
-app.patch("/customer/appointments/:id/cancel", async (req, res) => {
+app.patch("/customer/appointments/:id/cancel", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid appointment ID." });
-    }
-
-    const customer = await resolveCustomer(req);
-    if (!customer) {
-      return res.status(401).json({ message: "Unauthorized. Please sign in." });
     }
 
     const appointment = await appointmentsCollection.findOne({
@@ -572,9 +619,8 @@ app.patch("/customer/appointments/:id/cancel", async (req, res) => {
       return res.status(404).json({ message: "Appointment not found." });
     }
 
-    // Verify ownership
     const isOwner = await appointmentsCollection.findOne({
-      $and: [{ _id: new ObjectId(id) }, buildOwnershipQuery(customer)],
+      $and: [{ _id: new ObjectId(id) }, buildOwnershipQuery(req.authUser)],
     });
 
     if (!isOwner) {
@@ -583,7 +629,6 @@ app.patch("/customer/appointments/:id/cancel", async (req, res) => {
         .json({ message: "You can only cancel your own appointments." });
     }
 
-    // Rule: cannot cancel confirmed or already cancelled appointments
     if (appointment.status !== "pending") {
       return res.status(400).json({
         message: `Cannot cancel an appointment that is already ${appointment.status}.`,
@@ -606,17 +651,11 @@ app.patch("/customer/appointments/:id/cancel", async (req, res) => {
   }
 });
 
-// Pay Only for Own Confirmed Appointment
-app.post("/customer/appointments/:id/pay", async (req, res) => {
+app.post("/customer/appointments/:id/pay", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid appointment ID." });
-    }
-
-    const customer = await resolveCustomer(req);
-    if (!customer) {
-      return res.status(401).json({ message: "Unauthorized. Please sign in." });
     }
 
     const appointment = await appointmentsCollection.findOne({
@@ -628,7 +667,7 @@ app.post("/customer/appointments/:id/pay", async (req, res) => {
     }
 
     const isOwner = await appointmentsCollection.findOne({
-      $and: [{ _id: new ObjectId(id) }, buildOwnershipQuery(customer)],
+      $and: [{ _id: new ObjectId(id) }, buildOwnershipQuery(req.authUser)],
     });
 
     if (!isOwner) {
@@ -637,11 +676,9 @@ app.post("/customer/appointments/:id/pay", async (req, res) => {
         .json({ message: "You can only pay for your own appointments." });
     }
 
-    // Rule: cannot pay for pending or cancelled appointments
     if (appointment.status !== "confirmed") {
       return res.status(400).json({
-        message:
-          "Payment is only allowed for confirmed appointments.",
+        message: "Payment is only allowed for confirmed appointments.",
       });
     }
 
@@ -672,7 +709,6 @@ app.post("/customer/appointments/:id/pay", async (req, res) => {
     res.status(500).json({ message: "Failed to process payment." });
   }
 });
-
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
