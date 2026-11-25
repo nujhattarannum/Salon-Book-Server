@@ -311,6 +311,58 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
   }
 });
 
+//Api to change users role from Manage Users in Admin
+app.patch("/admin/users/:id/role", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!["customer", "admin"].includes(role)) {
+      return res.status(400).json({ message: "Invalid role." });
+    }
+
+    const updated = await usersCollection.findOneAndUpdate(
+      buildUserFilter(id),
+      { $set: { role, updatedAt: new Date() } },
+      { returnDocument: "after", projection: { password: 0 } }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    res.json({ message: "User role updated.", user: updated });
+  } catch (err) {
+    console.error("PATCH /admin/users/:id/role error:", err);
+    res.status(500).json({ message: "Failed to update user role." });
+  }
+});
+
+ // APi to block a user from Admin
+app.patch("/admin/users/:id/block", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isBlocked } = req.body;
+
+    const updated = await usersCollection.findOneAndUpdate(
+      buildUserFilter(id),
+      { $set: { isBlocked: Boolean(isBlocked), updatedAt: new Date() } },
+      { returnDocument: "after", projection: { password: 0 } }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    res.json({
+      message: isBlocked ? "User blocked." : "User unblocked.",
+      user: updated,
+    });
+  } catch (err) {
+    console.error("PATCH /admin/users/:id/block error:", err);
+    res.status(500).json({ message: "Failed to update block status." });
+  }
+});
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
