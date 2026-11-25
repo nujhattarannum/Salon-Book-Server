@@ -399,6 +399,75 @@ app.get("/admin/transactions", requireAdmin, async (req, res) => {
     res.status(500).json({ message: "Failed to load transactions." });
   }
 });
+
+//  Customer's Own Appointments (with Service details)
+app.get("/customer/appointments", async (req, res) => {
+  try {
+    const customer = await resolveCustomer(req);
+    if (!customer) {
+      return res.status(401).json({ message: "Unauthorized. Please sign in." });
+    }
+
+    const ownerFilter = buildOwnershipQuery(customer);
+
+    const appointments = await appointmentsCollection
+      .aggregate([
+        { $match: ownerFilter },
+        { $sort: { createdAt: -1 } },
+        {
+          $addFields: {
+            serviceObjId: {
+              $cond: [
+                { $eq: [{ $type: "$serviceId" }, "objectId"] },
+                "$serviceId",
+                {
+                  $convert: {
+                    input: "$serviceId",
+                    to: "objectId",
+                    onError: null,
+                    onNull: null,
+                  },
+                },
+              ],
+            },
+          },
+        },
+        {
+          $lookup: {
+            from: "services",
+            localField: "serviceObjId",
+            foreignField: "_id",
+            as: "serviceDoc",
+          },
+        },
+        {
+          $unwind: { path: "$serviceDoc", preserveNullAndEmptyArrays: true },
+        },
+        {
+          $project: {
+            serviceId: 1,
+            serviceName: { $ifNull: ["$serviceDoc.name", "$serviceName", "Salon Service"] },
+            serviceImage: "$serviceDoc.image",
+            serviceCategory: "$serviceDoc.category",
+            serviceDuration: "$serviceDoc.duration",
+            servicePrice: { $ifNull: ["$servicePrice", "$serviceDoc.price", 0] },
+            appointmentDate: 1,
+            timeSlot: 1,
+            status: 1,
+            paymentStatus: { $ifNull: ["$paymentStatus", "unpaid"] },
+            message: 1,
+            createdAt: 1,
+          },
+        },
+      ])
+      .toArray();
+
+    res.json({ appointments });
+  } catch (err) {
+    console.error("GET /customer/appointments error:", err);
+    res.status(500).json({ message: "Failed to load appointments." });
+  }
+});
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
