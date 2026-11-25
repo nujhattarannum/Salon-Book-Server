@@ -126,6 +126,41 @@ app.post("/appointments", async (req, res) => {
     error: err.message, });
   }
 });
+
+//Api to fetch the statistics data in Admin Dashboard Overview
+app.get("/admin/stats", requireAdmin, async (req, res) => {
+  try {
+    const [
+      totalCustomers,
+      totalServices,
+      totalAppointments,
+      pendingAppointments,
+      confirmedAppointments,
+      successfulPayments,
+    ] = await Promise.all([
+      usersCollection.countDocuments({ role: { $ne: "admin" } }),
+      servicesCollection.countDocuments({ isActive: true }),
+      appointmentsCollection.countDocuments({}),
+      appointmentsCollection.countDocuments({ status: "pending" }),
+      appointmentsCollection.countDocuments({ status: "confirmed" }),
+      appointmentsCollection.countDocuments({ paymentStatus: "paid" }),
+    ]);
+
+    res.json({
+      stats: {
+        totalCustomers,
+        totalServices,
+        totalAppointments,
+        pendingAppointments,
+        confirmedAppointments,
+        successfulPayments,
+      },
+    });
+  } catch (err) {
+    console.error("GET /admin/stats error:", err);
+    res.status(500).json({ message: "Failed to load admin stats." });
+  }
+});
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
