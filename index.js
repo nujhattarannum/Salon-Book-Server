@@ -524,6 +524,73 @@ app.patch("/customer/appointments/:id/cancel", async (req, res) => {
   }
 });
 
+// 4. Pay Only for Own Confirmed Appointment
+app.post("/customer/appointments/:id/pay", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid appointment ID." });
+    }
+
+    const customer = await resolveCustomer(req);
+    if (!customer) {
+      return res.status(401).json({ message: "Unauthorized. Please sign in." });
+    }
+
+    const appointment = await appointmentsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!appointment) {
+      return res.status(404).json({ message: "Appointment not found." });
+    }
+
+    const isOwner = await appointmentsCollection.findOne({
+      $and: [{ _id: new ObjectId(id) }, buildOwnershipQuery(customer)],
+    });
+
+    if (!isOwner) {
+      return res
+        .status(403)
+        .json({ message: "You can only pay for your own appointments." });
+    }
+
+    // Rule: cannot pay for pending or cancelled appointments
+    if (appointment.status !== "confirmed") {
+      return res.status(400).json({
+        message:
+          "Payment is only allowed for confirmed appointments.",
+      });
+    }
+
+    if (appointment.paymentStatus === "paid") {
+      return res
+        .status(400)
+        .json({ message: "This appointment is already paid." });
+    }
+
+    const updated = await appointmentsCollection.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          paymentStatus: "paid",
+          paidAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      { returnDocument: "after" }
+    );
+
+    res.json({
+      message: "Payment completed successfully.",
+      appointment: updated,
+    });
+  } catch (err) {
+    console.error("POST /customer/appointments/:id/pay error:", err);
+    res.status(500).json({ message: "Failed to process payment." });
+  }
+});
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
