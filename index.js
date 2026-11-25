@@ -266,6 +266,29 @@ app.post("/admin/services", requireAdmin, async (req, res) => {
     res.status(500).json({ message: "Failed to create service." });
   }
 });
+
+// Delete service
+app.delete("/admin/services/:id", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid service ID." });
+    }
+
+    const result = await servicesCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "Service not found." });
+    }
+
+    res.json({ message: "Service deleted successfully." });
+  } catch (err) {
+    console.error("DELETE /admin/services/:id error:", err);
+    res.status(500).json({ message: "Failed to delete service." });
+  }
+});
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
