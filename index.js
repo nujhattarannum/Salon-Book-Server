@@ -29,6 +29,61 @@ const database = client.db("SalonBook");
 const servicesCollection = database.collection("services");
 const paymentsCollection = database.collection("payments");
 const appointmentsCollection = database.collection("appointments");
+
+const AUTH_URL = process.env.BETTER_AUTH_URL;
+
+async function getBetterAuthSession(req) {
+  try {
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader) return null;
+
+    const res = await fetch(`${AUTH_URL}/api/auth/get-session`, {
+      method: "GET",
+      headers: {
+        cookie: cookieHeader,
+      },
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    if (!data?.user) return null;
+
+    // Fetch latest role & isBlocked status from MongoDB user collection
+    const email = data.user.email?.toLowerCase();
+    const id = data.user.id;
+
+    const query = [];
+    if (id) {
+      query.push({ id: String(id) });
+      if (ObjectId.isValid(String(id))) {
+        query.push({ _id: new ObjectId(String(id)) });
+      }
+    }
+    if (email) {
+      query.push({ email });
+    }
+
+    const dbUser = query.length
+      ? await usersCollection.findOne({ $or: query })
+      : null;
+
+    return {
+      session: data.session,
+      user: {
+        ...data.user,
+        ...(dbUser || {}),
+        id: dbUser?.id || String(dbUser?._id || data.user.id),
+        role: dbUser?.role || data.user.role || "customer",
+        isBlocked: Boolean(dbUser?.isBlocked ?? data.user.isBlocked ?? false),
+      },
+    };
+  } catch (err) {
+    console.error("getBetterAuthSession error:", err);
+    return null;
+  }
+}
+
 // APi To fetch salon services in the homepage 
 app.get("/services", async (req, res) => {
   try {
@@ -524,7 +579,7 @@ app.patch("/customer/appointments/:id/cancel", async (req, res) => {
   }
 });
 
-// 4. Pay Only for Own Confirmed Appointment
+// Pay Only for Own Confirmed Appointment
 app.post("/customer/appointments/:id/pay", async (req, res) => {
   try {
     const { id } = req.params;
