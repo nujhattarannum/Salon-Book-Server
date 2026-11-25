@@ -27,6 +27,7 @@ export async function connectToMongoDB() {
 }
 const database = client.db("SalonBook");
 const servicesCollection = database.collection("services");
+const paymentsCollection = database.collection("payments");
 const appointmentsCollection = database.collection("appointments");
 // APi To fetch salon services in the homepage 
 app.get("/services", async (req, res) => {
@@ -361,6 +362,41 @@ app.patch("/admin/users/:id/block", requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("PATCH /admin/users/:id/block error:", err);
     res.status(500).json({ message: "Failed to update block status." });
+  }
+});
+
+// Api to reads paid/payment records in Admin Transactions
+app.get("/admin/transactions", requireAdmin, async (req, res) => {
+  try {
+    const fromPayments = await paymentsCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    if (fromPayments.length > 0) {
+      return res.json({ transactions: fromPayments });
+    }
+
+    // Fallback: derive transactions from appointments that have been paid
+    const paidAppointments = await appointmentsCollection
+      .find({ paymentStatus: "paid" })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    const transactions = paidAppointments.map((appt) => ({
+      _id: appt._id,
+      transactionId: appt.transactionId || String(appt._id).slice(-8).toUpperCase(),
+      customerEmail: appt.customerEmail,
+      serviceName: appt.serviceName || "Salon Service",
+      amount: Number(appt.servicePrice || 0),
+      status: appt.paymentStatus,
+      createdAt: appt.createdAt || new Date(),
+    }));
+
+    res.json({ transactions });
+  } catch (err) {
+    console.error("GET /admin/transactions error:", err);
+    res.status(500).json({ message: "Failed to load transactions." });
   }
 });
 app.get('/', (req, res) => {
