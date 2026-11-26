@@ -2,7 +2,9 @@ import express from 'express'
 import { MongoClient, ObjectId } from 'mongodb';
 import 'dotenv/config'
 import cors from 'cors'
+import Stripe from "stripe";
 
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const app = express()
 const port = 8000
 
@@ -25,13 +27,16 @@ export async function connectToMongoDB() {
     console.dir(err);
   }
 }
+
 const database = client.db("SalonBook");
 const servicesCollection = database.collection("services");
+const usersCollection = database.collection("user");
 const paymentsCollection = database.collection("payments");
 const appointmentsCollection = database.collection("appointments");
 
 const AUTH_URL = process.env.BETTER_AUTH_URL;
-//Backend Session Helper function
+
+// Backend Session Helper function
 async function getBetterAuthSession(req) {
   try {
     const cookieHeader = req.headers.cookie;
@@ -84,7 +89,7 @@ async function getBetterAuthSession(req) {
   }
 }
 
-// Middleware to gets the authenticated user straight from authData.user
+// Middleware to get the authenticated user straight from authData.user
 async function requireAuth(req, res, next) {
   const authData = await getBetterAuthSession(req);
   if (!authData?.user) {
@@ -111,7 +116,8 @@ async function requireAdmin(req, res, next) {
   req.authUser = authData.user;
   next();
 }
-// APi To fetch salon services in the homepage 
+
+// API to fetch salon services in the homepage
 app.get("/services", async (req, res) => {
   try {
     const services = await servicesCollection
@@ -121,7 +127,6 @@ app.get("/services", async (req, res) => {
     res.status(200).json(services);
   } catch (error) {
     console.error("Error fetching services:", error);
-
     res.status(500).json({
       message: "Failed to fetch salon services",
     });
@@ -129,12 +134,10 @@ app.get("/services", async (req, res) => {
 });
 
 // GET /services/:id -> Single Service Details
-// ==========================================
 app.get("/services/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Validate MongoDB ObjectId format
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid service ID format." });
     }
@@ -152,8 +155,7 @@ app.get("/services/:id", async (req, res) => {
   }
 });
 
-
-// POST appoinments from /service/:id
+// POST appointments from /service/:id
 app.post("/appointments", async (req, res) => {
   try {
     const { serviceId, customerId, date, time, notes } = req.body;
@@ -171,7 +173,9 @@ app.post("/appointments", async (req, res) => {
     });
 
     if (!service || (!service.isActive && service.status !== "active")) {
-      return res.status(400).json({ message: "Service is unavailable or inactive." });
+      return res
+        .status(400)
+        .json({ message: "Service is unavailable or inactive." });
     }
 
     const conflict = await appointmentsCollection.findOne({
@@ -182,12 +186,16 @@ app.post("/appointments", async (req, res) => {
     });
 
     if (conflict) {
-      return res.status(409).json({ message: "This time slot is already booked." });
+      return res
+        .status(409)
+        .json({ message: "This time slot is already booked." });
     }
 
     const newAppointment = {
       serviceId: new ObjectId(serviceId),
-      customerId: ObjectId.isValid(customerId) ? new ObjectId(customerId) : customerId,
+      customerId: ObjectId.isValid(customerId)
+        ? new ObjectId(customerId)
+        : customerId,
       appointmentDate: date,
       timeSlot: time,
       message: (notes || "").trim(),
@@ -204,13 +212,14 @@ app.post("/appointments", async (req, res) => {
     });
   } catch (err) {
     console.error("Error creating appointment:", err);
-    res.status(500).json({ 
+    res.status(500).json({
       message: "Failed to create appointment.",
-    error: err.message, });
+      error: err.message,
+    });
   }
 });
 
-//Api to fetch the statistics data in Admin Dashboard Overview
+// API to fetch the statistics data in Admin Dashboard Overview
 app.get("/admin/stats", requireAdmin, async (req, res) => {
   try {
     const [
@@ -242,6 +251,110 @@ app.get("/admin/stats", requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("GET /admin/stats error:", err);
     res.status(500).json({ message: "Failed to load admin stats." });
+  }
+});
+
+// API to get all appointments for Admin
+app.get("/admin/appointments", requireAdmin, async (req, res) => {
+  try {
+    const appointments = await appointmentsCollection
+      .aggregate([
+        { $sort: { createdAt: -1 } },
+        {
+          $lookup: {
+            from: "services",
+            localField: "serviceId",
+            foreignField: "_id",
+            as: "serviceDoc",
+          },
+        },
+        {
+          $unwind: { path: "$serviceDoc", preserveNullAndEmptyArrays: true },
+        },
+        {
+          $addFields: {
+            customerObjId: {
+              $cond: [
+                { $eq: [{ $type: "$customerId" }, "objectId"] },
+                "$customerId",
+                {
+                  $convert: {
+                    input: "$customerId",
+                    to: "objectId",
+                    onError: null,
+                    onNull: null,
+                  },
+                },
+              ],
+            },
+          },
+        },
+        {
+          $lookup: {
+            from: "user",
+            localField: "customerObjId",
+            foreignField: "_id",
+            as: "customerDoc",
+          },
+        },
+        {
+          $unwind: { path: "$customerDoc", preserveNullAndEmptyArrays: true },
+        },
+        {
+          $project: {
+            serviceId: 1,
+            serviceName: "$serviceDoc.name",
+            customerId: 1,
+            customerName: "$customerDoc.name",
+            customerEmail: "$customerDoc.email",
+            appointmentDate: 1,
+            timeSlot: 1,
+            servicePrice: 1,
+            paymentStatus: 1,
+            status: 1,
+            message: 1,
+            createdAt: 1,
+          },
+        },
+      ])
+      .toArray();
+
+    res.json({ appointments });
+  } catch (err) {
+    console.error("GET /admin/appointments error:", err);
+    res.status(500).json({ message: "Failed to load appointments." });
+  }
+});
+
+// API to confirm / update appointment status from Admin
+app.patch("/admin/appointments/:id/status", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const allowedStatuses = ["pending", "confirmed", "completed", "cancelled"];
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid appointment ID." });
+    }
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid status value." });
+    }
+
+    const updated = await appointmentsCollection.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: { status, updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: "Appointment not found." });
+    }
+
+    res.json({ message: "Appointment status updated.", appointment: updated });
+  } catch (err) {
+    console.error("PATCH /admin/appointments/:id/status error:", err);
+    res.status(500).json({ message: "Failed to update appointment status." });
   }
 });
 
@@ -379,7 +492,7 @@ function buildUserFilter(id) {
     : { id };
 }
 
-//Api to get users in (Manage Users) in Admin
+// API to get users in (Manage Users) in Admin
 app.get("/admin/users", requireAdmin, async (req, res) => {
   try {
     const users = await usersCollection
@@ -394,7 +507,7 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
   }
 });
 
-//Api to change users role from Manage Users in Admin
+// API to change user's role from Manage Users in Admin
 app.patch("/admin/users/:id/role", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -421,7 +534,7 @@ app.patch("/admin/users/:id/role", requireAdmin, async (req, res) => {
   }
 });
 
- // APi to block a user from Admin
+// API to block a user from Admin
 app.patch("/admin/users/:id/block", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -447,7 +560,7 @@ app.patch("/admin/users/:id/block", requireAdmin, async (req, res) => {
   }
 });
 
-// Api to reads paid/payment records in Admin Transactions
+// API to read paid/payment records in Admin Transactions
 app.get("/admin/transactions", requireAdmin, async (req, res) => {
   try {
     const fromPayments = await paymentsCollection
@@ -459,7 +572,6 @@ app.get("/admin/transactions", requireAdmin, async (req, res) => {
       return res.json({ transactions: fromPayments });
     }
 
-    // Fallback: derive transactions from appointments that have been paid
     const paidAppointments = await appointmentsCollection
       .find({ paymentStatus: "paid" })
       .sort({ createdAt: -1 })
@@ -467,7 +579,8 @@ app.get("/admin/transactions", requireAdmin, async (req, res) => {
 
     const transactions = paidAppointments.map((appt) => ({
       _id: appt._id,
-      transactionId: appt.transactionId || String(appt._id).slice(-8).toUpperCase(),
+      transactionId:
+        appt.transactionId || String(appt._id).slice(-8).toUpperCase(),
       customerEmail: appt.customerEmail,
       serviceName: appt.serviceName || "Salon Service",
       amount: Number(appt.servicePrice || 0),
@@ -499,6 +612,24 @@ function buildOwnershipQuery(user) {
   if (user?.email) conditions.push({ customerEmail: user.email });
 
   return conditions.length === 1 ? conditions[0] : { $or: conditions };
+}
+
+function isAppointmentOwnedByUser(appointment, user) {
+  const ownerIds = new Set();
+  if (user?.id) ownerIds.add(String(user.id));
+  if (user?._id) ownerIds.add(String(user._id));
+
+  const apptCustomerId = appointment?.customerId
+    ? String(appointment.customerId)
+    : "";
+  const matchesId = apptCustomerId && ownerIds.has(apptCustomerId);
+  const matchesEmail =
+    user?.email &&
+    appointment?.customerEmail &&
+    String(appointment.customerEmail).toLowerCase() ===
+      String(user.email).toLowerCase();
+
+  return Boolean(matchesId || matchesEmail);
 }
 
 app.get("/customer/stats", requireAuth, async (req, res) => {
@@ -604,6 +735,7 @@ app.get("/customer/appointments", requireAuth, async (req, res) => {
   }
 });
 
+// Cancel only customer's own pending appointment
 app.patch("/customer/appointments/:id/cancel", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
@@ -619,11 +751,7 @@ app.patch("/customer/appointments/:id/cancel", requireAuth, async (req, res) => 
       return res.status(404).json({ message: "Appointment not found." });
     }
 
-    const isOwner = await appointmentsCollection.findOne({
-      $and: [{ _id: new ObjectId(id) }, buildOwnershipQuery(req.authUser)],
-    });
-
-    if (!isOwner) {
+    if (!isAppointmentOwnedByUser(appointment, req.authUser)) {
       return res
         .status(403)
         .json({ message: "You can only cancel your own appointments." });
@@ -651,6 +779,176 @@ app.patch("/customer/appointments/:id/cancel", requireAuth, async (req, res) => 
   }
 });
 
+app.post( "/customer/appointments/:id/create-checkout-session",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ message: "Invalid appointment ID." });
+      }
+
+      const appointment = await appointmentsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!appointment) {
+        return res.status(404).json({ message: "Appointment not found." });
+      }
+
+      if (!isAppointmentOwnedByUser(appointment, req.authUser)) {
+        return res
+          .status(403)
+          .json({ message: "You can only pay for your own appointments." });
+      }
+
+      if (appointment.status !== "confirmed") {
+        return res.status(400).json({
+          message: "Payment is only allowed for confirmed appointments.",
+        });
+      }
+
+      if (appointment.paymentStatus === "paid") {
+        return res
+          .status(400)
+          .json({ message: "This appointment is already paid." });
+      }
+
+      let serviceDoc = null;
+      if (
+        appointment.serviceId &&
+        ObjectId.isValid(String(appointment.serviceId))
+      ) {
+        serviceDoc = await servicesCollection.findOne({
+          _id: new ObjectId(String(appointment.serviceId)),
+        });
+      }
+
+      const serviceName =
+        serviceDoc?.name || appointment.serviceName || "Salon Appointment";
+      const priceDollars = Number(
+        serviceDoc?.price ?? appointment.servicePrice ?? 0
+      );
+
+      if (Number.isNaN(priceDollars) || priceDollars <= 0) {
+        return res.status(400).json({ message: "Invalid service price." });
+      }
+
+      const clientUrl = process.env.CLIENT_URL ;
+
+      const checkoutSession = await stripe.checkout.sessions.create({
+        mode: "payment",
+        payment_method_types: ["card"],
+        customer_email: req.authUser.email || appointment.customerEmail,
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: serviceName,
+                description: `Date: ${appointment.appointmentDate} at ${appointment.timeSlot}`,
+              },
+              unit_amount: Math.round(priceDollars * 100),
+            },
+            quantity: 1,
+          },
+        ],
+        metadata: {
+          appointmentId: String(appointment._id),
+          customerId: String(req.authUser.id),
+          customerEmail: req.authUser.email || "",
+          serviceName,
+        },
+        success_url: `${clientUrl}/dashboard/customer/appointments?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${clientUrl}/dashboard/customer/appointments?payment=cancelled`,
+      });
+
+      res.json({ url: checkoutSession.url });
+    } catch (err) {
+      console.error("Create checkout session error:", err);
+      res.status(500).json({ message: "Failed to create checkout session." });
+    }
+  }
+);
+
+app.post("/customer/appointments/confirm-checkout", requireAuth, async (req, res) => {
+    try {
+      const { sessionId } = req.body;
+      if (!sessionId) {
+        return res.status(400).json({ message: "Missing Stripe sessionId." });
+      }
+
+      const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
+
+      if (checkoutSession.payment_status !== "paid") {
+        return res
+          .status(400)
+          .json({ message: "Payment has not been completed." });
+      }
+
+      const appointmentId = checkoutSession.metadata?.appointmentId;
+      if (!appointmentId || !ObjectId.isValid(appointmentId)) {
+        return res
+          .status(400)
+          .json({ message: "Invalid appointment ID in session." });
+      }
+
+      const appointment = await appointmentsCollection.findOne({
+        _id: new ObjectId(appointmentId),
+      });
+
+      if (!appointment || !isAppointmentOwnedByUser(appointment, req.authUser)) {
+        return res.status(403).json({ message: "Unauthorized access." });
+      }
+
+      const updated = await appointmentsCollection.findOneAndUpdate(
+        { _id: new ObjectId(appointmentId) },
+        {
+          $set: {
+            paymentStatus: "paid",
+            stripeSessionId: checkoutSession.id,
+            paidAt: new Date(),
+            updatedAt: new Date(),
+          },
+        },
+        { returnDocument: "after" }
+      );
+
+      const existingPayment = await paymentsCollection.findOne({
+        checkoutSessionId: checkoutSession.id,
+      });
+
+      if (!existingPayment) {
+        await paymentsCollection.insertOne({
+          transactionId: checkoutSession.payment_intent || checkoutSession.id,
+          checkoutSessionId: checkoutSession.id,
+          appointmentId: new ObjectId(appointmentId),
+          customerId: String(req.authUser.id),
+          customerEmail:
+            req.authUser.email || checkoutSession.customer_email || "",
+          serviceName:
+            checkoutSession.metadata?.serviceName ||
+            updated?.serviceName ||
+            "Salon Service",
+          amount: (checkoutSession.amount_total || 0) / 100,
+          currency: checkoutSession.currency || "usd",
+          status: "paid",
+          createdAt: new Date(),
+        });
+      }
+
+      res.json({
+        message: "Payment verified and appointment marked as paid.",
+        appointment: updated,
+      });
+    } catch (err) {
+      console.error("Confirm checkout error:", err);
+      res.status(500).json({ message: "Failed to verify payment." });
+    }
+  }
+);
+
+// API to pay for appointments
 app.post("/customer/appointments/:id/pay", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
@@ -666,11 +964,7 @@ app.post("/customer/appointments/:id/pay", requireAuth, async (req, res) => {
       return res.status(404).json({ message: "Appointment not found." });
     }
 
-    const isOwner = await appointmentsCollection.findOne({
-      $and: [{ _id: new ObjectId(id) }, buildOwnershipQuery(req.authUser)],
-    });
-
-    if (!isOwner) {
+    if (!isAppointmentOwnedByUser(appointment, req.authUser)) {
       return res
         .status(403)
         .json({ message: "You can only pay for your own appointments." });
@@ -709,11 +1003,12 @@ app.post("/customer/appointments/:id/pay", requireAuth, async (req, res) => {
     res.status(500).json({ message: "Failed to process payment." });
   }
 });
-app.get('/', (req, res) => {
-  res.send('Hello World!')
-})
+
+app.get("/", (req, res) => {
+  res.send("Hello World!");
+});
 
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`)
+  console.log(`Example app listening on port ${port}`);
   connectToMongoDB();
-})
+});
